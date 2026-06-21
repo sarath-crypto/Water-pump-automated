@@ -8,21 +8,20 @@
 #include <include/WiFiState.h>
 #include <EEPROM.h>
 #include <Ticker.h>
+#include <Wire.h>
+#include "Adafruit_VL53L0X.h"
 
 #define PDU_MTU 512
 #define BUF_LEN 1452
-#define ADC_SZ 512
 
 #define STA_RETRY 32
-#define PORT      8880
+#define PORT      8882
 
 #define AP_SSID "PUMPSYS_AP"
 #define AP_PASS "PUMPSYS_PASS"
 
-#define TRIG_PIN 4
-#define ADC_PIN A0
-
 //#define DEBUG 1
+//pump_key@192.68.0.107:8882
 
 typedef struct pdu {
   unsigned char data[PDU_MTU];
@@ -59,6 +58,8 @@ void (*reset)(void) = 0;
 unsigned char rxp = 0xff;
 WiFiUDP Udp;
 Ticker timer_ka;
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+unsigned short sv = 0;
 
 void reboot(void) {
   rxp--;
@@ -68,8 +69,6 @@ void notFound(AsyncWebServerRequest *request) {
 }
 
 void setup() {
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ADC_PIN, INPUT);
   pinMode(BUILTIN_LED, OUTPUT);
   digitalWrite(BUILTIN_LED, HIGH);
 #ifdef DEBUG
@@ -166,9 +165,30 @@ void setup() {
   }
   digitalWrite(LED_BUILTIN, HIGH);
   timer_ka.attach(1, reboot);
+
+  while (!lox.begin()) {
+#ifdef DEBUG
+    Serial.println(F("Failed to boot VL53L0X"));
+#endif
+    digitalWrite(BUILTIN_LED, LOW);
+    delay(50);
+    digitalWrite(BUILTIN_LED, HIGH);
+    delay(50);
+    digitalWrite(BUILTIN_LED, LOW);
+    delay(50);
+    digitalWrite(BUILTIN_LED, HIGH);
+    delay(500);
+  }
+  lox.startRangeContinuous();
 }
 
 void loop() {
+  if(lox.isRangeComplete()){
+    unsigned short v = lox.readRange();
+    if(v <= 2000)sv = v;
+    delay(100);
+  }
+
   if (!rxp) reset();
   int pktsz = Udp.parsePacket();
   if (pktsz) {
@@ -184,16 +204,8 @@ void loop() {
     if (msg == key) {
       rxp = 0xff;
       digitalWrite(LED_BUILTIN, LOW);
-      tone(TRIG_PIN, 2000, 200);
-      delay(5);
-      unsigned int adc_data[ADC_SZ];
-      for (int i = 0; i < ADC_SZ; i++) adc_data[i] = analogRead(ADC_PIN);
-      float adc = 0;
-      for (int i = 0; i < ADC_SZ; i++) adc += adc_data[i];
-      adc = (float)adc / (float)ADC_SZ;
-
       pdu p;
-      String data = key + " " + String(adc);
+      String data = key + " " + String(sv);
       memcpy(p.data, data.c_str(), data.length());
       p.len = data.length();
       Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
@@ -201,7 +213,7 @@ void loop() {
       Udp.endPacket();
       Udp.flush();
 #ifdef DEBUG
-      Serial.printf("TX server[%s] port[%d] len[%d] data[%s] %d\n", Udp.remoteIP().toString().c_str(), Udp.remotePort(), p.len, data.c_str(), rxp);
+      Serial.printf("TX server[%s] port[%d] len[%d] data[%s] %d %d\n", Udp.remoteIP().toString().c_str(), Udp.remotePort(), p.len, data.c_str(), rxp, sv);
 #endif
       digitalWrite(LED_BUILTIN, HIGH);
     }
