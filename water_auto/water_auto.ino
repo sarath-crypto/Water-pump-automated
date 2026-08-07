@@ -5,6 +5,7 @@
 #include <user_interface.h>
 #include <include/WiFiState.h>
 #include <EEPROM.h>
+#include <Ticker.h>
 
 #define STA_RETRY 32
 
@@ -45,8 +46,15 @@ String pass;
 String hr;
 bool motor = false;
 bool full = false;
+Ticker timer_ka;
+unsigned char rxp = 0xff;
 
 void (*reset)(void) = 0;
+
+void reboot(void) {
+  rxp--;
+  if (!rxp) reset();
+}
 
 void notFound(AsyncWebServerRequest *request) {
   request->send(404, "text/plain", "Invalid Request");
@@ -87,9 +95,11 @@ void setup() {
     retry++;
     if (retry >= STA_RETRY) break;
   }
+  timer_ka.attach(1,reboot);
+
   digitalWrite(LED_R, LOW);
   digitalWrite(LED_G, LOW);
-
+  
   if (retry >= STA_RETRY) {
     IPAddress apip(10, 10, 10, 1);
     WiFi.mode(WIFI_AP_STA);
@@ -162,6 +172,7 @@ void loop() {
   time_t now = time(nullptr);
   struct tm timeinfo;
   if (localtime_r(&now, &timeinfo)) {
+    rxp = 0xff;
     char tm[8];
     strftime(tm, sizeof(tm), "%H", &timeinfo);
 #ifdef DEBUG
