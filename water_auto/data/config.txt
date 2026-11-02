@@ -1,5 +1,5 @@
-ssid = sarath_nivas_EXT
-password = land1234
-key = motor_key
+ssid = my_ssid
+password = my_pass
+key = my_key
 hr = 12
 epoch = 1789557373
