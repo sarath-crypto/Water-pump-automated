@@ -1,77 +1,50 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+#include <Ticker.h>
+#include <ESP8266WebServer.h>
 #include <user_interface.h>
 #include <include/WiFiState.h>
-#include <EEPROM.h>
-#include <Ticker.h>
 #include <time.h>
-
-#define STA_RETRY 32
-
-#define AP_SSID "MOTSYS_AP"
-#define AP_PASS "MOTSYS_PASS"
+#include "LittleFS.h"
 
 #define LED_R 12
 #define LED_G 13
+#define LED_W 16
 #define BUZ 14
 #define RELAY 5
-#define DIN 4
+#define RADIO_IN 4
+
+#define AP_SSID "MOTOR_AP"
+#define AP_PASS "MOTOR_PASS"
+#define STA_RETRY 32
 
 //#define DEBUG 1
 
-typedef struct ee_data {
-  unsigned char ssid_len;
-  char ssid[32];
-  unsigned char pass_len;
-  char pass[32];
-  unsigned char hr_len;
-  char hr[32];
-  unsigned char ct_len;
-  char ct[32];
-} ee_data;
-
-
-const char *PARAM_INPUT_1 = "input1";
-const char *PARAM_INPUT_2 = "input2";
-const char *PARAM_INPUT_3 = "input3";
-const char *PARAM_INPUT_4 = "input4";
-
-const char s1[] PROGMEM = { "<!DOCTYPE HTML><html><head><title>PWRSYS Configuration</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body><form action=\"/get\">______WiFi_SSID:<input type=\"text\" name=\"input1\" value=\"" };
-const char s2[] PROGMEM = { "\"><br><br>WiFi_PASSWORD:<input type=\"text\" name=\"input2\" value=\"" };
-const char s3[] PROGMEM = { "\"><br><br>___________HOUR:<input type=\"text\" name=\"input3\" value=\"" };
-const char s4[] PROGMEM = { "\"><br><br>TIME[YYYYmmDDhhMMss]:<input type=\"text\" name=\"input4\" value=\"" };
-const char s5[] PROGMEM = { "\"><input type=\"submit\" value=\"Reboot\"></form><h1>" };
-const char s6[] PROGMEM = { "</h1></body></html>" };
-String index_html;
-
-ee_data ee;
 String ssid;
 String pass;
+String nkey;
+String okey;
+String key;
 String hr;
-String ct;
+String epoch;
+
+bool wrst = false;
+bool ap_mode = false;
 bool motor = false;
 bool full = false;
-bool ap_mode = false;
 time_t epochTime = 1784643900;
-Ticker timer_ka;
-AsyncWebServer server(80);
-struct tm *timeInfo;
-unsigned char rxp = 0xff;
 unsigned char ts = 0;
+struct tm *timeInfo;
+unsigned char sec = 0;
+
+ESP8266WebServer server(80);
+Ticker timer_sec;
 void (*reset)(void) = 0;
 
-void reboot(void) {
+void ticks(void) {
   epochTime++;
-  rxp--;
-  if (!rxp) reset();
+  sec++;
 }
-
-void notFound(AsyncWebServerRequest *request) {
-  request->send(404, "text/plain", "Invalid Request");
-}
-
 
 void control_io(void) {
   if (ts == hr.toInt()) {
@@ -97,7 +70,7 @@ void control_io(void) {
     digitalWrite(RELAY, LOW);
   }
 
-  if (digitalRead(DIN) && motor && !full) {
+  if (digitalRead(RADIO_IN) && motor && !full) {
     motor = false;
     full = true;
     digitalWrite(LED_R, LOW);
@@ -106,9 +79,6 @@ void control_io(void) {
     Serial.printf("MOTOR OFF\n");
 #endif
   }
-#ifdef DEBUG
-  Serial.printf("STATUS MOTOR:%d FULL:%d\n", motor, full);
-#endif
   if (motor) digitalWrite(LED_R, digitalRead(LED_R) ^ 1);
   else {
     unsigned char lp = LED_G;
@@ -123,153 +93,181 @@ void control_io(void) {
   }
 }
 
+void handle_reconfig() {
+  ssid = server.arg(0);
+  pass = server.arg(1);
+  nkey = server.arg(2);
+  okey = server.arg(3);
+  hr = server.arg(4);
+  epoch = server.arg(5);
+
+#ifdef DEBUG
+  Serial.printf("Reconfig[%d] %s %s %s %s %s %s\n", server.args(), ssid.c_str(), pass.c_str(), nkey.c_str(), okey.c_str(), hr.c_str(), epoch.c_str());
+#endif
+  if ((okey == key) || ap_mode) {
+    File ofs = LittleFS.open("/config.txt", "w");
+    if (ofs) {
+      String msg = "ssid = " + ssid + "\npassword = " + pass + "\nkey = " + nkey + "\nhr = " + hr + "\nepoch = " + epoch;
+      ofs.print(msg);
+      ofs.close();
+    }
+    wrst = true;
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handle_root() {
+  String msg;
+  File ifs = LittleFS.open("/index.html", "r");
+  if (ifs) {
+    msg = ifs.readString();
+    ifs.close();
+  }
+  server.send(200, "text/html", msg);
+}
+
+void listAllFiles(const char *dirname) {
+  Serial.printf("\nListing directory: %s\n", dirname);
+  Dir root = LittleFS.openDir(dirname);
+  while (root.next()) {
+    Serial.print("FILE: ");
+    Serial.print(root.fileName());
+    Serial.print("  SIZE: ");
+    Serial.println(root.fileSize());
+  }
+}
+
+String extractValue(String line) {
+  int equalsIndex = line.indexOf('=');
+  if (equalsIndex == -1) {
+    return "";
+  }
+  String value = line.substring(equalsIndex + 1);
+  value.trim();
+  return value;
+}
+
+
 void setup() {
   pinMode(LED_R, OUTPUT);
   pinMode(LED_G, OUTPUT);
+  pinMode(LED_W, OUTPUT);
   pinMode(BUZ, OUTPUT);
   pinMode(RELAY, OUTPUT);
-
-  digitalWrite(LED_R, HIGH);
-#ifdef DEBUG
-  Serial.begin(115200);
-#endif
-  EEPROM.begin(sizeof(ee_data));
-  EEPROM.get(0, ee);
-  ssid = String(ee.ssid);
-  pass = String(ee.pass);
-  hr = String(ee.hr);
-  ct = String(ee.ct);
-  struct tm time_struct;
-
-  time_struct.tm_year = String(ct.substring(0, 4)).toInt() - 1900;
-  time_struct.tm_mon = String(ct.substring(4, 6)).toInt() - 1;
-  time_struct.tm_mday = String(ct.substring(6, 8)).toInt();
-  time_struct.tm_hour = String(ct.substring(8, 10)).toInt();
-  time_struct.tm_min = String(ct.substring(10, 12)).toInt();
-  time_struct.tm_sec = String(ct.substring(12, 14)).toInt();
-  time_struct.tm_isdst = 0;
-  epochTime = mktime(&time_struct);
-
-#ifdef DEBUG
-  Serial.printf("\nconfig: %s %s %s %s\n", ssid.c_str(), pass.c_str(), hr.c_str(), ct.c_str());
-#endif
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid.c_str(), pass.c_str());
-  int retry = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-#ifdef DEBUG
-    Serial.printf("Connecting to AP %s %s %d %d\n", ssid.c_str(), pass.c_str(), WiFi.status(), retry);
-#endif
-    digitalWrite(LED_R, HIGH);
-    digitalWrite(LED_G, LOW);
-    delay(250);
-    digitalWrite(LED_R, LOW);
-    digitalWrite(LED_G, HIGH);
-    delay(250);
-    retry++;
-    if (retry >= STA_RETRY) break;
-  }
-  timer_ka.attach(1, reboot);
+  pinMode(RADIO_IN, INPUT);
 
   digitalWrite(LED_R, LOW);
   digitalWrite(LED_G, LOW);
-#ifdef DEBUG
-  Serial.printf("STA GW IP %s MyIP %s %ddbm\n", WiFi.gatewayIP().toString().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
-#endif
-  if (retry >= STA_RETRY) ap_mode = true;
-  else configTime("IST-5:30", "pool.ntp.org", "time.nist.gov");
-  digitalWrite(LED_BUILTIN, HIGH);
-}
+  digitalWrite(LED_W, LOW);
+  digitalWrite(BUZ, LOW);
+  digitalWrite(RELAY, LOW);
 
-void loop() {
+  digitalWrite(LED_R, HIGH);
+  delay(1000);
+  digitalWrite(LED_R, LOW);
+  digitalWrite(LED_G, HIGH);
+  delay(1000);
+  digitalWrite(LED_G, LOW);
+  digitalWrite(LED_W, HIGH);
+  delay(1000);
+  digitalWrite(LED_W, LOW);
+
+  timer_sec.attach(1, ticks);
+#ifdef DEBUG
+  Serial.begin(115200);
+#endif
+  if (!LittleFS.begin()) {
+    LittleFS.format();
+    ap_mode = true;
+  }
+
+  if (!ap_mode) {
+#ifdef DEBUG
+    listAllFiles("/");
+#endif
+
+    File ifs = LittleFS.open("/config.txt", "r");
+    if (ifs) {
+      String line = ifs.readStringUntil('\n');
+      ssid = extractValue(line);
+      line = ifs.readStringUntil('\n');
+      pass = extractValue(line);
+      line = ifs.readStringUntil('\n');
+      key = extractValue(line);
+      line = ifs.readStringUntil('\n');
+      hr = extractValue(line);
+      line = ifs.readStringUntil('\n');
+      epoch = extractValue(line);
+#ifdef DEBUG
+      Serial.printf("config: %s %s %s %s %s\n", ssid.c_str(), pass.c_str(), key.c_str(), hr.c_str(), epoch.c_str());
+#endif
+    } else ap_mode = true;
+  }
+  if (!ap_mode) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+#ifdef DEBUG
+      Serial.printf("Connecting to AP %s %s %d %d\n", ssid.c_str(), pass.c_str(), WiFi.status(), retry);
+#endif
+      digitalWrite(LED_G, HIGH);
+      delay(250);
+      digitalWrite(LED_G, LOW);
+      delay(250);
+      retry++;
+      if (retry >= STA_RETRY) {
+        ap_mode = true;
+        break;
+      }
+    }
+#ifdef DEBUG
+    Serial.printf("STA GW IP %s MyIP %s %ddbm\n", WiFi.gatewayIP().toString().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+#endif
+  }
   if (ap_mode) {
+#ifdef DEBUG
+    Serial.println("AP mode");
+#endif
     IPAddress apip(10, 10, 10, 1);
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(apip, apip, IPAddress(255, 255, 255, 0));
-    WiFi.softAP(AP_SSID, AP_PASS, 7, false, 1);
+    WiFi.softAP(AP_SSID, AP_PASS, 7, false, 2);
+  }else 
+  server.on("/reconfig", HTTP_POST, handle_reconfig);
+  server.on("/", HTTP_GET, handle_root);
+  server.begin();
+  wifi_set_sleep_type(LIGHT_SLEEP_T);
+}
 
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-      String eps = String(timeInfo->tm_year + 1900) + "-" + String(timeInfo->tm_mon + 1) + "-" + String(timeInfo->tm_mday) + "[" + String(timeInfo->tm_hour) + ":" + String(timeInfo->tm_min) + ":" + String(timeInfo->tm_sec) + "]";
-      index_html = String(s1) + ssid + String(s2) + pass + String(s3) + hr + String(s4) + ct + String(s5) + eps + String(s6);
-      request->send_P(200, "text/html", index_html.c_str());
-    });
-    server.on("/get", HTTP_GET, [](AsyncWebServerRequest *request) {
-      if (request->hasParam(PARAM_INPUT_1)) {
-        ssid = request->getParam(PARAM_INPUT_1)->value();
-      }
-      if (request->hasParam(PARAM_INPUT_2)) {
-        pass = request->getParam(PARAM_INPUT_2)->value();
-      }
-      if (request->hasParam(PARAM_INPUT_3)) {
-        hr = request->getParam(PARAM_INPUT_3)->value();
-      }
-      if (request->hasParam(PARAM_INPUT_4)) {
-        ct = request->getParam(PARAM_INPUT_4)->value();
-        struct tm time_struct;
-        time_struct.tm_year = String(ct.substring(0, 4)).toInt() - 1900;
-        time_struct.tm_mon = String(ct.substring(4, 2)).toInt() - 1;
-        time_struct.tm_mday = String(ct.substring(6, 2)).toInt();
-        time_struct.tm_hour = String(ct.substring(8, 2)).toInt();
-        time_struct.tm_min = String(ct.substring(10, 2)).toInt();
-        time_struct.tm_sec = String(ct.substring(12, 2)).toInt();
-        time_struct.tm_isdst = 0;
-        epochTime = mktime(&time_struct);
-      }
-#ifdef DEBUG
-      Serial.printf("Web message %s %s %s %s\n", ssid.c_str(), pass.c_str(), hr.c_str(), ct.c_str());
-#endif
-      String ee_ssid;
-      String ee_pass;
-      String ee_hr;
-      String ee_ct;
-      while ((ee_ssid != ssid) && (ee_pass != pass) && (ee_hr != hr) && (ee_ct != ct)) {
-        strcpy(ee.ssid, ssid.c_str());
-        ee.ssid_len = ssid.length();
-        strcpy(ee.pass, pass.c_str());
-        ee.pass_len = pass.length();
-        strcpy(ee.hr, hr.c_str());
-        ee.hr_len = hr.length();
-        strcpy(ee.ct, ct.c_str());
-        ee.ct_len = ct.length();
-        EEPROM.put(0, ee);
-        EEPROM.commit();
-        delay(100);
-        EEPROM.get(0, ee);
-        ee_ssid = String(ee.ssid);
-        ee_pass = String(ee.pass);
-        ee_hr = String(ee.hr);
-        ee_ct = String(ee.ct);
-      }
-      request->redirect("http://10.10.10.1");
-      reset();
-    });
-    server.onNotFound(notFound);
-    server.begin();
 
-    while (1) {
-      rxp = 0xff;
-      timeInfo = gmtime(&epochTime);
-      ts = String(timeInfo->tm_hour).toInt();
-      control_io();
-#ifdef DEBUG
-      Serial.printf("AP Current hour %d\n", ts);
-#endif
-      delay(5000);
-    }
+void loop() {
+  if (ap_mode) {
+    timeInfo = gmtime(&epochTime);
+    ts = String(timeInfo->tm_hour).toInt();
   } else {
     time_t now = time(nullptr);
     struct tm timeinfo;
     if (localtime_r(&now, &timeinfo)) {
-      rxp = 0xff;
       char tm[8];
       strftime(tm, sizeof(tm), "%H", &timeinfo);
       ts = atoi(tm);
     }
-    control_io();
-#ifdef DEBUG
-    Serial.printf("STA Current hour %d\n", ts);
-#endif
-    delay(5000);
   }
+
+  server.handleClient();
+  if (wrst) {
+#ifdef DEBUG
+    Serial.printf("Web Reset\n");
+#endif
+    delay(1000);
+    reset();
+  }
+  if (sec >= 5) {
+    sec = 0;
+    control_io();
+  }
+  if (digitalRead(RADIO_IN)) digitalWrite(LED_W, HIGH);
+  else digitalWrite(LED_W, LOW);
 }

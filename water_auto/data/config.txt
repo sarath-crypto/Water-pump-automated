@@ -1,0 +1,5 @@
+ssid = sarath_nivas_EXT
+password = land1234
+key = motor_key
+hr = 12
+epoch = 1789557373

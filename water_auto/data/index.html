@@ -1,0 +1,66 @@
+<html><head>
+<title>Elder Care System</title>
+<meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        .form-container {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            gap: 20px;
+            max-width: 400px;
+            margin: 10px auto;
+            font-family: Arial, sans-serif;
+        }
+
+        .form-container label {
+            display: flex;
+            align-items: centre;
+            font-weight: bold;
+        }
+
+        .form-container input[type="text"] {
+            width: 100%;
+            padding: 1px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+    </style>
+</head><body bgcolor=#1B7D74 style="color: white;">
+<table border="1">
+  <tr>
+    <th>Configuration</th>
+  </tr>
+  <tr>
+   <td width="500">
+	<form class="form-container" action="/reconfig" method="POST" form id="myForm">
+        <label for="ssid">SSID:</label>
+        <input type="text" id="ssid" name="ssid" placeholder="SSID of Wifi">
+
+        <label for="pass">Password:</label>
+        <input type="text" id="pass" name="pass" placeholder="Password for Wifi">
+		
+        <label for="nkey">New Motor Key:</label>
+        <input type="text" id="nkey" name="nkey" placeholder="New Motor key">
+		        
+		<label for="okey">Old Motor Key:</label>		
+        <input type="text" id="okey" name="okey" placeholder="Old Motor key">
+
+		<label for="hr">MOTOR HOURS:</label>		
+        <input type="text" id="hr" name="hr" placeholder="12">
+        		
+		<input type="hidden" id="epoch" name="epoch">
+        <input type="submit" value="Submit">
+	</form>
+	<script>
+        const form = document.getElementById('myForm');
+        const epochInput = document.getElementById('epoch');
+        form.addEventListener('submit', function(event) {
+            const currentEpochSeconds = Math.floor(Date.now() / 1000);
+            epochInput.value = currentEpochSeconds;
+        });
+    </script>
+   </td>
+ </tr>
+</table>
+</body></html>
