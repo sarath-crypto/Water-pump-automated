@@ -234,7 +234,9 @@ void setup() {
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAPConfig(apip, apip, IPAddress(255, 255, 255, 0));
     WiFi.softAP(AP_SSID, AP_PASS, 7, false, 2);
-  }else 
+    epochTime = epoch.toInt();
+  }else configTime(19800, 0, "pool.ntp.org");
+
   server.on("/reconfig", HTTP_POST, handle_reconfig);
   server.on("/", HTTP_GET, handle_root);
   server.begin();
@@ -265,6 +267,9 @@ void loop() {
     reset();
   }
   if (sec >= 5) {
+#ifdef DEBUG
+      Serial.printf("HOUR %d\n",ts);
+#endif
     sec = 0;
     control_io();
   }
